@@ -1,0 +1,209 @@
+// Prisma schema for the tailor marketplace.
+// Mutability notes are in comments: "append-only" tables are never updated or deleted by app code.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// SQLite has no native enums, so Prisma enums are stored as strings and validated in code.
+enum Role {
+  CUSTOMER
+  PROVIDER
+}
+
+enum RequestStatus {
+  OPEN
+  AWARDED
+  CLOSED
+}
+
+enum BidStatus {
+  PENDING
+  ACCEPTED
+  DECLINED
+  SUPERSEDED
+}
+
+enum OrderStatus {
+  ACCEPTED
+  PAID
+  IN_PROGRESS
+  DELIVERED
+  COMPLETED
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+}
+
+model User {
+  id           String   @id @default(uuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         Role
+  createdAt    DateTime @default(now())
+
+  sessions        Session[]
+  requests        Request[] @relation("CustomerRequests")
+  bids            Bid[]
+  customerOrders  Order[]   @relation("CustomerOrders")
+  providerOrders  Order[]   @relation("ProviderOrders")
+  messages        Message[]
+  reviewsWritten  Review[]  @relation("ReviewAuthor")
+  reviewsReceived Review[]  @relation("ReviewTarget")
+  orderEvents     OrderEvent[]
+}
+
+// Insert and delete only.
+model Session {
+  id        String   @id // random token, never a guessable id
+  userId    String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model Request {
+  id          String        @id @default(uuid())
+  customerId  String
+  title       String
+  description String
+  budgetCents Int
+  photoPath   String? // stored filename under /uploads, never the original name
+  status      RequestStatus @default(OPEN)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  customer User  @relation("CustomerRequests", fields: [customerId], references: [id])
+  bids     Bid[]
+  order    Order?
+
+  @@index([customerId])
+  @@index([status])
+}
+
+// The "slot" a provider holds on a request. Only status changes; the offer lives in revisions.
+model Bid {
+  id         String    @id @default(uuid())
+  requestId  String
+  providerId String
+  status     BidStatus @default(PENDING)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  request   Request       @relation(fields: [requestId], references: [id])
+  provider  User          @relation(fields: [providerId], references: [id])
+  revisions BidRevision[]
+  order     Order?
+
+  @@unique([requestId, providerId]) // one bid slot per provider per request
+  @@index([providerId])
+}
+
+// Append-only. Each revision is a full offer; the highest revisionNumber is the current one.
+model BidRevision {
+  id             String   @id @default(uuid())
+  bidId          String
+  revisionNumber Int
+  priceCents     Int
+  timelineDays   Int
+  note           String
+  createdAt      DateTime @default(now())
+
+  bid Bid @relation(fields: [bidId], references: [id])
+
+  @@unique([bidId, revisionNumber])
+}
+
+model Order {
+  id          String      @id @default(uuid())
+  requestId   String      @unique
+  bidId       String      @unique
+  customerId  String
+  providerId  String
+  amountCents Int
+  status      OrderStatus @default(ACCEPTED)
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  request  Request      @relation(fields: [requestId], references: [id])
+  bid      Bid          @relation(fields: [bidId], references: [id])
+  customer User         @relation("CustomerOrders", fields: [customerId], references: [id])
+  provider User         @relation("ProviderOrders", fields: [providerId], references: [id])
+  payment  Payment?
+  events   OrderEvent[]
+  messages Message[]
+  review   Review?
+
+  @@index([customerId])
+  @@index([providerId])
+}
+
+// Append-only audit trail of every status change.
+model OrderEvent {
+  id         String   @id @default(uuid())
+  orderId    String
+  fromStatus String? // null for the creating event
+  toStatus   String
+  actorId    String? // null for system (payment callback)
+  createdAt  DateTime @default(now())
+
+  order Order @relation(fields: [orderId], references: [id])
+  actor User? @relation(fields: [actorId], references: [id])
+
+  @@index([orderId])
+}
+
+model Payment {
+  id             String        @id @default(uuid())
+  orderId        String        @unique
+  amountCents    Int
+  status         PaymentStatus @default(PENDING)
+  providerRef    String?       // fake "transaction id" from the mock gateway
+  callbackSecret String        @unique // the gateway must present this to confirm
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  order Order @relation(fields: [orderId], references: [id])
+}
+
+// Append-only.
+model Message {
+  id        String   @id @default(uuid())
+  orderId   String
+  senderId  String
+  body      String
+  createdAt DateTime @default(now())
+
+  order  Order @relation(fields: [orderId], references: [id])
+  sender User  @relation(fields: [senderId], references: [id])
+
+  @@index([orderId, createdAt])
+}
+
+// Append-only, one per order.
+model Review {
+  id         String   @id @default(uuid())
+  orderId    String   @unique
+  customerId String
+  providerId String
+  rating     Int
+  comment    String
+  createdAt  DateTime @default(now())
+
+  order    Order @relation(fields: [orderId], references: [id])
+  customer User  @relation("ReviewAuthor", fields: [customerId], references: [id])
+  provider User  @relation("ReviewTarget", fields: [providerId], references: [id])
+
+  @@index([providerId])
+}

@@ -6,11 +6,11 @@ generator client {
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // transaction pooler (port 6543) for the app
+  directUrl = env("DIRECT_URL") // session pooler (port 5432) for schema pushes
 }
 
-// SQLite has no native enums, so Prisma enums are stored as strings and validated in code.
 enum Role {
   CUSTOMER
   PROVIDER
@@ -43,15 +43,16 @@ enum PaymentStatus {
   FAILED
 }
 
+// Application profile for a Supabase Auth user. `id` IS the auth.users id.
+// Passwords and sessions live in Supabase Auth, never here.
+// Rows are created by the `handle_new_auth_user` trigger (supabase/migrations/0002_auth_rls_realtime.sql).
 model User {
-  id           String   @id @default(uuid())
-  email        String   @unique
-  passwordHash String
-  name         String
-  role         Role
-  createdAt    DateTime @default(now())
+  id        String   @id // auth.users.id (uuid) stored as text
+  email     String   @unique
+  name      String
+  role      Role
+  createdAt DateTime @default(now())
 
-  sessions        Session[]
   requests        Request[] @relation("CustomerRequests")
   bids            Bid[]
   customerOrders  Order[]   @relation("CustomerOrders")
@@ -62,24 +63,13 @@ model User {
   orderEvents     OrderEvent[]
 }
 
-// Insert and delete only.
-model Session {
-  id        String   @id // random token, never a guessable id
-  userId    String
-  expiresAt DateTime
-  createdAt DateTime @default(now())
-  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId])
-}
-
 model Request {
   id          String        @id @default(uuid())
   customerId  String
   title       String
   description String
   budgetCents Int
-  photoPath   String? // stored filename under /uploads, never the original name
+  photoPath   String? // object path in the private "reference-photos" Storage bucket
   status      RequestStatus @default(OPEN)
   createdAt   DateTime      @default(now())
   updatedAt   DateTime      @updatedAt

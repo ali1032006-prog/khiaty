@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
-import { saveImage } from "@/lib/uploads";
+import { savePhoto } from "@/lib/storage";
 import type { ActionState } from "./auth";
 
 const schema = z.object({
@@ -28,7 +28,7 @@ export async function createRequest(_prev: ActionState, formData: FormData): Pro
   let photoPath: string | null = null;
   const photo = formData.get("photo");
   if (photo instanceof File && photo.size > 0) {
-    const saved = await saveImage(photo);
+    const saved = await savePhoto(photo);
     if (typeof saved !== "string") return saved;
     photoPath = saved;
   }

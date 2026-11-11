@@ -23,6 +23,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
       payment: true,
       review: true,
       events: { orderBy: { createdAt: "asc" }, include: { actor: { select: { name: true } } } },
+      messages: { orderBy: { createdAt: "asc" } },
     },
   });
   // Only the two parties may see an order. Everyone else gets a 404, not a 403, to avoid confirming it exists.
@@ -85,7 +86,14 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
       <section>
         <h2 className="text-xl font-semibold">Chat</h2>
         {chatUnlocked(order.status) ? (
-          <div className="mt-3"><Chat orderId={order.id} meId={user.id} /></div>
+          <div className="mt-3">
+            <Chat
+              orderId={order.id}
+              meId={user.id}
+              initial={order.messages.map((m) => ({ id: m.id, body: m.body, senderId: m.senderId, createdAt: m.createdAt.toISOString() }))}
+              names={{ [order.customer.id]: order.customer.name, [order.provider.id]: order.provider.name }}
+            />
+          </div>
         ) : (
           <p className="mt-3 rounded border border-dashed border-stone-300 p-4 text-sm text-stone-600">
             Chat unlocks after the order is paid.

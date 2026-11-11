@@ -5,6 +5,7 @@ import { db } from "@/lib/db";
 import { money, STATUS_LABEL, when } from "@/lib/format";
 import { acceptBid, declineBid } from "@/lib/actions/bids";
 import { PlaceBidForm, ReviseBidForm } from "./BidForms";
+import { signedPhotoUrl } from "@/lib/storage";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -20,6 +21,9 @@ export default async function RequestPage({ params }: Props) {
   // A customer may only open their own requests. Providers may open any (they need to browse to bid).
   if (user.role === "CUSTOMER" && request.customerId !== user.id) notFound();
 
+  // Access was checked above; only now do we mint a short-lived link to the private photo.
+  const photoUrl = request.photoPath ? await signedPhotoUrl(request.photoPath) : null;
+
   return (
     <div className="space-y-8">
       <section className="rounded border border-stone-200 bg-white p-5">
@@ -33,9 +37,9 @@ export default async function RequestPage({ params }: Props) {
           <span className="rounded bg-stone-100 px-2 py-0.5 text-xs">{STATUS_LABEL[request.status]}</span>
         </div>
         <p className="mt-4 whitespace-pre-wrap text-stone-800">{request.description}</p>
-        {request.photoPath && (
+        {photoUrl && (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={`/api/uploads/${request.photoPath}`} alt="Reference" className="mt-4 max-h-80 rounded border border-stone-200" />
+          <img src={photoUrl} alt="Reference" className="mt-4 max-h-80 rounded border border-stone-200" />
         )}
         {request.order && (
           <p className="mt-4 text-sm">

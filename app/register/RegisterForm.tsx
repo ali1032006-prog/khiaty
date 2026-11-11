@@ -25,6 +25,7 @@ export function RegisterForm() {
         <label><input type="radio" name="role" value="PROVIDER" /> Tailor (provider)</label>
       </fieldset>
       {state?.error && <p className="text-sm text-red-600">{state.error}</p>}
+      {state?.info && <p className="text-sm text-emerald-700">{state.info}</p>}
       <button disabled={pending} className="w-full rounded bg-stone-900 px-4 py-2 text-white disabled:opacity-50">
         {pending ? "Creating…" : "Create account"}
       </button>

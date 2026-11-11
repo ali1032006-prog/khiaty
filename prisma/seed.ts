@@ -1,16 +1,37 @@
 /**
- * Demo data. Run with `npm run db:seed` (also runs automatically on `npm run dev` via db:setup).
- * Idempotent: wipes everything and starts fresh so you can reset the demo at any time.
+ * Demo data. Run with `npm run db:seed`. Idempotent: deletes the demo auth users and all app
+ * rows, then recreates them. Needs SUPABASE_SERVICE_ROLE_KEY because creating auth users
+ * (with the email pre-confirmed) is an admin operation.
  */
+import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
-import bcrypt from "bcryptjs";
+import { createClient } from "@supabase/supabase-js";
 import { randomBytes } from "crypto";
 
 const db = new PrismaClient();
 const PASSWORD = "password123";
+const admin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
+  auth: { autoRefreshToken: false, persistSession: false },
+});
+
+async function createAuthUser(email: string, name: string, role: "CUSTOMER" | "PROVIDER") {
+  const { data, error } = await admin.auth.admin.createUser({
+    email,
+    password: PASSWORD,
+    email_confirm: true, // skip the confirmation email for demo accounts
+    user_metadata: { name, role },
+  });
+  if (error || !data.user) throw new Error(`createUser ${email}: ${error?.message}`);
+  // The on_auth_user_created trigger already inserted the profile; upsert makes this robust anyway.
+  return db.user.upsert({
+    where: { id: data.user.id },
+    update: { name, role, email },
+    create: { id: data.user.id, email, name, role },
+  });
+}
 
 async function main() {
-  // Order matters because of foreign keys.
+  // Wipe app rows (FK order), then demo auth users.
   await db.message.deleteMany();
   await db.review.deleteMany();
   await db.orderEvent.deleteMany();
@@ -19,20 +40,18 @@ async function main() {
   await db.bidRevision.deleteMany();
   await db.bid.deleteMany();
   await db.request.deleteMany();
-  await db.session.deleteMany();
   await db.user.deleteMany();
 
-  const hash = await bcrypt.hash(PASSWORD, 10);
-  const mk = (email: string, name: string, role: "CUSTOMER" | "PROVIDER") =>
-    db.user.create({ data: { email, name, role, passwordHash: hash } });
+  const { data: existing } = await admin.auth.admin.listUsers({ perPage: 1000 });
+  for (const u of existing?.users ?? []) {
+    await admin.auth.admin.deleteUser(u.id);
+  }
 
-  const [c1, c2, t1, t2, t3] = await Promise.all([
-    mk("customer1@demo.test", "Amina (customer)", "CUSTOMER"),
-    mk("customer2@demo.test", "Omar (customer)", "CUSTOMER"),
-    mk("tailor1@demo.test", "Layla's Atelier", "PROVIDER"),
-    mk("tailor2@demo.test", "Hassan Bespoke", "PROVIDER"),
-    mk("tailor3@demo.test", "Nour Stitchworks", "PROVIDER"),
-  ]);
+  const c1 = await createAuthUser("customer1@demo.test", "Amina (customer)", "CUSTOMER");
+  const c2 = await createAuthUser("customer2@demo.test", "Omar (customer)", "CUSTOMER");
+  const t1 = await createAuthUser("tailor1@demo.test", "Layla's Atelier", "PROVIDER");
+  const t2 = await createAuthUser("tailor2@demo.test", "Hassan Bespoke", "PROVIDER");
+  const t3 = await createAuthUser("tailor3@demo.test", "Nour Stitchworks", "PROVIDER");
 
   const offer = (rev: number, price: number, days: number, note: string) => ({
     revisionNumber: rev,
@@ -51,7 +70,7 @@ async function main() {
     },
   });
 
-  // 2. Open request with three bids, one declined and revised (customer1).
+  // 2. Open request with three bids, one with revision history (customer1).
   await db.request.create({
     data: {
       customerId: c1.id,
@@ -77,7 +96,6 @@ async function main() {
     },
   });
 
-  // Helper: build an awarded request + order in a given state.
   async function awarded(opts: {
     customerId: string;
     providerId: string;
@@ -89,21 +107,10 @@ async function main() {
     losers?: string[];
   }) {
     const request = await db.request.create({
-      data: {
-        customerId: opts.customerId,
-        title: opts.title,
-        description: opts.description,
-        budgetCents: opts.budget * 100,
-        status: "AWARDED",
-      },
+      data: { customerId: opts.customerId, title: opts.title, description: opts.description, budgetCents: opts.budget * 100, status: "AWARDED" },
     });
     const bid = await db.bid.create({
-      data: {
-        requestId: request.id,
-        providerId: opts.providerId,
-        status: "ACCEPTED",
-        revisions: { create: [offer(1, opts.price, 7, "Can do.")] },
-      },
+      data: { requestId: request.id, providerId: opts.providerId, status: "ACCEPTED", revisions: { create: [offer(1, opts.price, 7, "Can do.")] } },
     });
     for (const loser of opts.losers ?? []) {
       await db.bid.create({
@@ -113,7 +120,7 @@ async function main() {
     const stages = ["ACCEPTED", "PAID", "IN_PROGRESS", "DELIVERED", "COMPLETED"] as const;
     const reached = stages.slice(0, stages.indexOf(opts.status) + 1);
     const paid = opts.status !== "ACCEPTED";
-    const order = await db.order.create({
+    return db.order.create({
       data: {
         requestId: request.id,
         bidId: bid.id,
@@ -133,24 +140,20 @@ async function main() {
           create: reached.map((s, i) => ({
             fromStatus: i === 0 ? null : reached[i - 1],
             toStatus: s,
-            // PAID is done by the gateway (no actor); provider does start/deliver; customer accepts/completes.
             actorId: s === "PAID" ? null : s === "IN_PROGRESS" || s === "DELIVERED" ? opts.providerId : opts.customerId,
             createdAt: new Date(Date.now() - (reached.length - i) * 86_400_000),
           })),
         },
       },
     });
-    return order;
   }
 
-  // 3. Accepted but unpaid (customer2 + tailor1): lets you try the payment page.
   await awarded({
     customerId: c2.id, providerId: t1.id,
     title: "Take in a navy suit jacket", description: "Jacket is one size too big in the chest and waist. Sleeves are fine.",
     budget: 90, price: 85, status: "ACCEPTED", losers: [t3.id],
   });
 
-  // 4. Paid with a few chat messages (customer1 + tailor2).
   const paidOrder = await awarded({
     customerId: c1.id, providerId: t2.id,
     title: "Replace zipper on leather jacket", description: "Main front zipper is broken. Would like a brass YKK replacement.",
@@ -164,21 +167,18 @@ async function main() {
     ],
   });
 
-  // 5. In progress (customer2 + tailor3).
   await awarded({
     customerId: c2.id, providerId: t3.id,
     title: "Shorten curtains (4 panels)", description: "Each panel needs 12 cm off the bottom with a blind hem.",
     budget: 70, price: 60, status: "IN_PROGRESS",
   });
 
-  // 6. Delivered, waiting for customer confirmation (customer1 + tailor3).
   await awarded({
     customerId: c1.id, providerId: t3.id,
     title: "Patch and reinforce denim knees", description: "Two pairs of kids' jeans, visible mending style is fine.",
     budget: 40, price: 35, status: "DELIVERED",
   });
 
-  // 7. Completed with a review (customer2 + tailor2).
   const done = await awarded({
     customerId: c2.id, providerId: t2.id,
     title: "Wedding shirt alterations", description: "Slim the body and shorten sleeves by 2 cm on a white dress shirt.",

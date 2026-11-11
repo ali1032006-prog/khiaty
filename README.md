@@ -29,7 +29,7 @@ Supabase-specific SQL (profile trigger, RLS, Realtime publication, storage bucke
 
 ## Demo accounts
 
-Password for every account: `password123`
+Every account uses the `DEMO_PASSWORD` you set in `.env`. When running locally, the login page shows it; the deployed site does not.
 
 | Email | Role |
 |---|---|

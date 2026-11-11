@@ -10,7 +10,12 @@ import { randomBytes } from "crypto";
 import { hashSecret, newCallbackSecret } from "../lib/payments/secret";
 
 const db = new PrismaClient();
-const PASSWORD = "password123";
+// Read from .env so the demo password is never in the (public) repository.
+const PASSWORD = process.env.DEMO_PASSWORD ?? "";
+if (PASSWORD.length < 12) {
+  console.error("Set DEMO_PASSWORD in .env (12+ characters) before seeding.");
+  process.exit(1);
+}
 const admin = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
   auth: { autoRefreshToken: false, persistSession: false },
 });
@@ -193,7 +198,7 @@ async function main() {
     data: { orderId: done.id, customerId: c2.id, providerId: t2.id, rating: 5, comment: "Fit is perfect and it was ready a day early. Highly recommended." },
   });
 
-  console.log("Seeded. All demo accounts use password:", PASSWORD);
+  console.log("Seeded. All demo accounts use the DEMO_PASSWORD from .env.");
 }
 
 main()

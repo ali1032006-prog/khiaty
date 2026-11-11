@@ -1,5 +1,7 @@
 # Khiaty
 
+**Live:** https://khiaty-phi.vercel.app (deployed on Vercel from `main`; every push redeploys)
+
 A small two-sided tailoring marketplace: customers post requests, tailors bid blind, the customer accepts and pays, chat unlocks, the order moves through stages, and the customer reviews.
 
 ## Run it

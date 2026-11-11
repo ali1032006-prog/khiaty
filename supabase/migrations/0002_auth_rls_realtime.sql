@@ -26,7 +26,8 @@ begin
   values (
     new.id::text,
     new.email,
-    coalesce(nullif(new.raw_user_meta_data ->> 'name', ''), split_part(new.email, '@', 1)),
+    -- Cap the name here too: the form's 80-char rule can be bypassed by calling Auth directly.
+    left(coalesce(nullif(btrim(new.raw_user_meta_data ->> 'name'), ''), split_part(new.email, '@', 1)), 80),
     v_role
   )
   on conflict (id) do nothing;
@@ -52,13 +53,20 @@ alter table public."OrderEvent"  enable row level security;
 alter table public."Payment"     enable row level security;
 alter table public."Message"     enable row level security;
 alter table public."Review"      enable row level security;
+alter table public."GatewaySession" enable row level security; -- holds raw payment secrets: no policies, ever
 
 -- The only browser-facing read: a party to a paid-or-later order may read its messages.
 -- This is what Realtime evaluates before delivering an INSERT event to a subscriber.
 -- Note: a policy's subquery runs with the caller's privileges, and "Order" has RLS with no
 -- policies, so a plain EXISTS(select from "Order") would never see a row. The helper below is
 -- SECURITY DEFINER (runs as its owner) and limited to the authenticated role.
-create or replace function public.is_party_to_paid_order(p_order_id text)
+-- It lives in "private" because PostgREST only exposes "public": the policy can call it, but it is
+-- not a /rest/v1/rpc endpoint.
+create schema if not exists private;
+revoke all on schema private from public, anon;
+grant usage on schema private to authenticated;
+
+create or replace function private.is_party_to_paid_order(p_order_id text)
 returns boolean
 language sql
 security definer
@@ -73,14 +81,14 @@ as $$
   );
 $$;
 
-revoke execute on function public.is_party_to_paid_order(text) from public, anon;
-grant execute on function public.is_party_to_paid_order(text) to authenticated;
+revoke execute on function private.is_party_to_paid_order(text) from public, anon;
+grant execute on function private.is_party_to_paid_order(text) to authenticated;
 
 drop policy if exists "parties read messages" on public."Message";
 create policy "parties read messages"
   on public."Message" for select
   to authenticated
-  using (public.is_party_to_paid_order("orderId"));
+  using (private.is_party_to_paid_order("orderId"));
 
 -- 3. Realtime -----------------------------------------------------------------
 alter publication supabase_realtime add table public."Message";

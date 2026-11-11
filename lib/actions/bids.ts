@@ -1,11 +1,13 @@
 "use server";
 
 import { z } from "zod";
-import { randomBytes } from "crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
+import { hashSecret, newCallbackSecret } from "@/lib/payments/secret";
+import { securityEvent } from "@/lib/log";
+import { Prisma } from "@prisma/client";
 import type { ActionState } from "./auth";
 
 const offerSchema = z.object({
@@ -47,9 +49,12 @@ export async function placeBid(_prev: ActionState, formData: FormData): Promise<
         },
       },
     });
-  } catch {
-    // The unique index on (requestId, providerId) fires here: one slot per provider.
-    return { error: "You already have a bid on this request. Revise it instead." };
+  } catch (e) {
+    // Only the unique index on (requestId, providerId) means "duplicate"; anything else is a real error.
+    if (e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002") {
+      return { error: "You already have a bid on this request. Revise it instead." };
+    }
+    throw e;
   }
   revalidatePath(`/requests/${requestId}`);
   return undefined;
@@ -70,7 +75,10 @@ export async function reviseBid(_prev: ActionState, formData: FormData): Promise
     include: { request: { select: { status: true } }, revisions: { orderBy: { revisionNumber: "desc" }, take: 1 } },
   });
   // Ownership check: the bid must be this provider's.
-  if (!bid || bid.providerId !== user.id) return { error: "Bid not found." };
+  if (!bid || bid.providerId !== user.id) {
+    securityEvent("bid.revise.denied", { userId: user.id, bidId });
+    return { error: "Bid not found." };
+  }
   if (bid.status !== "DECLINED") return { error: "Only a declined bid can be revised." };
   if (bid.request.status !== "OPEN") return { error: "This request is no longer open." };
 
@@ -97,7 +105,10 @@ export async function declineBid(formData: FormData) {
 
   const bid = await db.bid.findUnique({ where: { id: bidId }, include: { request: true } });
   // Rule: only the request owner decides. Compare against the session user, never the form.
-  if (!bid || bid.request.customerId !== user.id) return;
+  if (!bid || bid.request.customerId !== user.id) {
+    securityEvent("bid.decline.denied", { userId: user.id, bidId });
+    return;
+  }
   if (bid.status !== "PENDING" || bid.request.status !== "OPEN") return;
 
   await db.bid.update({ where: { id: bidId }, data: { status: "DECLINED" } });
@@ -116,10 +127,14 @@ export async function acceptBid(formData: FormData) {
     where: { id: bidId },
     include: { request: true, revisions: { orderBy: { revisionNumber: "desc" }, take: 1 } },
   });
-  if (!bid || bid.request.customerId !== user.id) return;
+  if (!bid || bid.request.customerId !== user.id) {
+    securityEvent("bid.accept.denied", { userId: user.id, bidId });
+    return;
+  }
   if (bid.status !== "PENDING" || bid.request.status !== "OPEN") return;
 
   const latest = bid.revisions[0];
+  const secret = newCallbackSecret(); // handed to the gateway; we keep only the hash
   const orderId = await db.$transaction(async (tx) => {
     await tx.bid.update({ where: { id: bidId }, data: { status: "ACCEPTED" } });
     await tx.bid.updateMany({
@@ -139,7 +154,8 @@ export async function acceptBid(formData: FormData) {
         payment: {
           create: {
             amountCents: latest.priceCents,
-            callbackSecret: randomBytes(32).toString("base64url"),
+            callbackSecretHash: hashSecret(secret),
+            gatewaySession: { create: { secret } },
           },
         },
       },

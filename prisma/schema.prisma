@@ -160,11 +160,23 @@ model Payment {
   amountCents    Int
   status         PaymentStatus @default(PENDING)
   providerRef    String?       // fake "transaction id" from the mock gateway
-  callbackSecret String        @unique // the gateway must present this to confirm
+  callbackSecretHash String    @unique // sha256 of the secret the gateway must present; raw value never stored here
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
 
-  order Order @relation(fields: [orderId], references: [id])
+  order          Order           @relation(fields: [orderId], references: [id])
+  gatewaySession GatewaySession?
+}
+
+// "What the payment provider knows". In production this row would live on Stripe's servers:
+// we hand them the raw secret when creating the checkout session and keep only a hash ourselves.
+model GatewaySession {
+  id        String   @id @default(uuid())
+  paymentId String   @unique
+  secret    String
+  createdAt DateTime @default(now())
+
+  payment Payment @relation(fields: [paymentId], references: [id])
 }
 
 // Append-only.

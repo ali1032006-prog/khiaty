@@ -101,11 +101,21 @@ CREATE TABLE "Payment" (
     "amountCents" INTEGER NOT NULL,
     "status" "PaymentStatus" NOT NULL DEFAULT 'PENDING',
     "providerRef" TEXT,
-    "callbackSecret" TEXT NOT NULL,
+    "callbackSecretHash" TEXT NOT NULL,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "Payment_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "GatewaySession" (
+    "id" TEXT NOT NULL,
+    "paymentId" TEXT NOT NULL,
+    "secret" TEXT NOT NULL,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+    CONSTRAINT "GatewaySession_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -169,7 +179,10 @@ CREATE INDEX "OrderEvent_orderId_idx" ON "OrderEvent"("orderId");
 CREATE UNIQUE INDEX "Payment_orderId_key" ON "Payment"("orderId");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "Payment_callbackSecret_key" ON "Payment"("callbackSecret");
+CREATE UNIQUE INDEX "Payment_callbackSecretHash_key" ON "Payment"("callbackSecretHash");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "GatewaySession_paymentId_key" ON "GatewaySession"("paymentId");
 
 -- CreateIndex
 CREATE INDEX "Message_orderId_createdAt_idx" ON "Message"("orderId", "createdAt");
@@ -212,6 +225,9 @@ ALTER TABLE "OrderEvent" ADD CONSTRAINT "OrderEvent_actorId_fkey" FOREIGN KEY ("
 
 -- AddForeignKey
 ALTER TABLE "Payment" ADD CONSTRAINT "Payment_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "GatewaySession" ADD CONSTRAINT "GatewaySession_paymentId_fkey" FOREIGN KEY ("paymentId") REFERENCES "Payment"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Message" ADD CONSTRAINT "Message_orderId_fkey" FOREIGN KEY ("orderId") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

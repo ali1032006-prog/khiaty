@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, useTransition } from "react";
 import { sendMessage } from "@/lib/actions/chat";
-import { createSupabaseBrowser } from "@/lib/supabase/client";
+import { createClient } from "@supabase/supabase-js";
 
 export type ChatMessage = { id: string; body: string; createdAt: string; senderId: string };
 
@@ -11,6 +11,7 @@ type Props = {
   meId: string;
   initial: ChatMessage[];
   names: Record<string, string>; // userId -> display name for the two parties
+  realtimeToken: string; // the user's short-lived access token, provided by the server page
 };
 
 /** Renders a local time only after mount: the server and the browser may format times differently. */
@@ -25,7 +26,7 @@ function LocalTime({ iso }: { iso: string }) {
  * Realtime only delivers rows the subscriber may SELECT under RLS, so a stranger who guesses
  * an order id subscribes to silence.
  */
-export function Chat({ orderId, meId, initial, names }: Props) {
+export function Chat({ orderId, meId, initial, names, realtimeToken }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>(initial);
   const [error, setError] = useState<string | null>(null);
   const [pending, start] = useTransition();
@@ -33,15 +34,18 @@ export function Chat({ orderId, meId, initial, names }: Props) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const supabase = createSupabaseBrowser();
+    // No cookie access needed in the browser: the auth cookies are HttpOnly. The server page hands
+    // us the user's current access token (valid about an hour) purely for the Realtime socket.
+    const supabase = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!, {
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
     let channel: ReturnType<typeof supabase.channel> | null = null;
     let cancelled = false;
 
     (async () => {
       // RLS on the Realtime channel is evaluated with the token the socket presents, so attach
-      // the signed-in user's token before joining; otherwise the channel joins as "anon" and sees nothing.
-      const { data } = await supabase.auth.getSession();
-      if (data.session) await supabase.realtime.setAuth(data.session.access_token);
+      // it before joining; otherwise the channel joins as "anon" and sees nothing.
+      await supabase.realtime.setAuth(realtimeToken);
       if (cancelled) return;
 
       channel = supabase
@@ -63,7 +67,7 @@ export function Chat({ orderId, meId, initial, names }: Props) {
       cancelled = true;
       if (channel) supabase.removeChannel(channel);
     };
-  }, [orderId]);
+  }, [orderId, realtimeToken]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });

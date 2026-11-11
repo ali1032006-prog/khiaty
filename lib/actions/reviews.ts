@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { requireRole } from "@/lib/auth";
 import type { ActionState } from "./auth";
+import { securityEvent } from "@/lib/log";
 
 const schema = z.object({
   orderId: z.string().uuid(),
@@ -18,7 +19,10 @@ export async function createReview(_prev: ActionState, formData: FormData): Prom
   if (!parsed.success) return { error: "Rating 1-5 and a comment are required." };
 
   const order = await db.order.findUnique({ where: { id: parsed.data.orderId }, include: { review: true } });
-  if (!order || order.customerId !== user.id) return { error: "Order not found." };
+  if (!order || order.customerId !== user.id) {
+    securityEvent("review.create.denied", { userId: user.id, orderId: parsed.data.orderId });
+    return { error: "Order not found." };
+  }
   if (order.status !== "COMPLETED") return { error: "You can review once the order is completed." };
   if (order.review) return { error: "You already reviewed this order." };
 

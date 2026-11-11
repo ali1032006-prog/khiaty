@@ -7,6 +7,7 @@ import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import { createClient } from "@supabase/supabase-js";
 import { randomBytes } from "crypto";
+import { hashSecret, newCallbackSecret } from "../lib/payments/secret";
 
 const db = new PrismaClient();
 const PASSWORD = "password123";
@@ -35,6 +36,7 @@ async function main() {
   await db.message.deleteMany();
   await db.review.deleteMany();
   await db.orderEvent.deleteMany();
+  await db.gatewaySession.deleteMany();
   await db.payment.deleteMany();
   await db.order.deleteMany();
   await db.bidRevision.deleteMany();
@@ -42,9 +44,10 @@ async function main() {
   await db.request.deleteMany();
   await db.user.deleteMany();
 
+  // Only ever delete the demo accounts, never other users that may exist in the project.
   const { data: existing } = await admin.auth.admin.listUsers({ perPage: 1000 });
   for (const u of existing?.users ?? []) {
-    await admin.auth.admin.deleteUser(u.id);
+    if (u.email?.endsWith("@demo.test")) await admin.auth.admin.deleteUser(u.id);
   }
 
   const c1 = await createAuthUser("customer1@demo.test", "Amina (customer)", "CUSTOMER");
@@ -120,6 +123,7 @@ async function main() {
     const stages = ["ACCEPTED", "PAID", "IN_PROGRESS", "DELIVERED", "COMPLETED"] as const;
     const reached = stages.slice(0, stages.indexOf(opts.status) + 1);
     const paid = opts.status !== "ACCEPTED";
+    const secret = newCallbackSecret();
     return db.order.create({
       data: {
         requestId: request.id,
@@ -133,7 +137,8 @@ async function main() {
             amountCents: opts.price * 100,
             status: paid ? "SUCCEEDED" : "PENDING",
             providerRef: paid ? `mock_${randomBytes(8).toString("hex")}` : null,
-            callbackSecret: randomBytes(32).toString("base64url"),
+            callbackSecretHash: hashSecret(secret),
+            gatewaySession: { create: { secret } },
           },
         },
         events: {

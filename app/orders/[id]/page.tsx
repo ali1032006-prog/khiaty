@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { requireUser } from "@/lib/auth";
+import { createSupabaseServer } from "@/lib/supabase/server";
+import { securityEvent } from "@/lib/log";
 import { db } from "@/lib/db";
 import { money, STATUS_LABEL, when } from "@/lib/format";
 import { ACTION_LABEL, TRANSITIONS, chatUnlocked } from "@/lib/orders/stateMachine";
@@ -27,7 +29,14 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
     },
   });
   // Only the two parties may see an order. Everyone else gets a 404, not a 403, to avoid confirming it exists.
-  if (!order || (order.customerId !== user.id && order.providerId !== user.id)) notFound();
+  if (!order || (order.customerId !== user.id && order.providerId !== user.id)) {
+    securityEvent("order.view.denied", { userId: user.id, orderId: id });
+    notFound();
+  }
+
+  // Short-lived access token for the Realtime socket (cookies are HttpOnly, so the page cannot read them).
+  const { data: sessionData } = await (await createSupabaseServer()).auth.getSession();
+  const realtimeToken = sessionData.session?.access_token ?? "";
 
   const next = TRANSITIONS[order.status];
   const canAdvance = next && next.by === user.role;
@@ -92,6 +101,7 @@ export default async function OrderPage({ params }: { params: Promise<{ id: stri
               meId={user.id}
               initial={order.messages.map((m) => ({ id: m.id, body: m.body, senderId: m.senderId, createdAt: m.createdAt.toISOString() }))}
               names={{ [order.customer.id]: order.customer.name, [order.provider.id]: order.provider.name }}
+              realtimeToken={realtimeToken}
             />
           </div>
         ) : (

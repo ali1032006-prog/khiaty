@@ -246,3 +246,222 @@ and teaches a rule that applies everywhere: configuration tells you your own URL
 cleanest fix also removes the self-call entirely, which shrinks the attack surface rather than patching it.
 
 Second choice if you prefer an auth topic: finding 3 (registration enumeration), a ten-line change.
+
+---
+
+## Fixed
+
+**Date:** 2026-11-11. All twelve findings were addressed. Three need a setting that only exists in the
+Supabase dashboard; those are listed under "Still on you" at the end. Everything below was verified
+against a production build (`next build && next start`) and against Supabase from the browser's
+position (public anon key, signed in as different users).
+
+### 1. Host-header SSRF in the payment step: fixed
+
+The simulated gateway no longer makes an HTTP request to "itself". The confirmation logic moved into
+one function, `confirmPayment` in `lib/payments/confirm.ts`. The webhook route and the simulated gateway
+both call it, so no request header ever decides where the secret goes.
+
+Before, `lib/actions/payments.ts`:
+
+```ts
+const h = await headers();
+const origin = `${h.get("x-forwarded-proto") ?? "http"}://${h.get("host")}`;
+const res = await fetch(`${origin}/api/payments/callback`, {
+  method: "POST",
+  body: JSON.stringify({ paymentId: payment.id, secret: payment.callbackSecret, ... }),
+});
+```
+
+After:
+
+```ts
+// --- everything below is "the gateway" ---
+const result = await confirmPayment({
+  paymentId: payment.id,
+  secret: payment.gatewaySession.secret,
+  amountCents: payment.amountCents,
+  providerRef: `mock_${randomBytes(8).toString("hex")}`,
+  status: outcome === "fail" ? "FAILED" : "SUCCEEDED",
+});
+```
+
+**Verify:** `grep -n "headers()\|fetch(" lib/actions/payments.ts lib/payments/*.ts` prints nothing.
+Paying still moves the order to Paid.
+
+### 2. Login brute force: fixed in the app
+
+`lib/rateLimit.ts` adds a fixed-window limiter. Login allows 5 attempts per account and 30 per client
+address per 15 minutes; registration allows 10 per client address per hour. The message is the same
+generic text whichever limit trips.
+
+Before: every attempt went straight to `supabase.auth.signInWithPassword`.
+
+After, `lib/actions/auth.ts`:
+
+```ts
+const perAccount = checkRateLimit(`login:acct:${email}`, 5, 15 * MIN);
+const perClient = checkRateLimit(`login:ip:${ip}`, 30, 15 * MIN);
+if (!perAccount.ok || !perClient.ok) {
+  securityEvent("auth.login.throttled", { emailTag: emailTag(email), ip });
+  return { error: `Too many attempts. Try again in about ${wait} minute(s).` };
+}
+```
+
+**Verify:** on the login page, enter a wrong password for the same email six times. Attempts 1 to 5 say
+"Incorrect email or password." Attempt 6 says "Too many attempts". Restart the server to reset.
+
+**Limit:** the counters live in memory, so they reset on restart and are per server process. A
+multi-instance deployment should keep them in the database or Redis.
+
+### 3. Registration account enumeration: fixed
+
+Provider errors are no longer shown. Every registration outcome that is not an immediate sign-in gets the
+same neutral message, and the real reason goes to the server log.
+
+Before: `if (error) return { error: error.message };` which showed "User already registered".
+
+After:
+
+```ts
+if (error) {
+  securityEvent("auth.register.failed", { emailTag: emailTag(email), ip, provider: error.message });
+  return { info: REGISTER_NEUTRAL };
+}
+```
+
+**Verify:** register with `customer1@demo.test`. The page shows "If this email was not already
+registered, your account is ready", the same as for a new address.
+
+### 4. Failed payment could never be retried: fixed
+
+A FAILED payment can now be confirmed again; only SUCCEEDED is final. The pay page tells the customer
+the last attempt failed and offers to retry.
+
+Before: `if (payment.status !== "PENDING") return 409` in the callback, and a redirect away on the pay page.
+After: `if (payment.status === "SUCCEEDED") return 409` in `confirmPayment`, and the pay page redirects
+only on SUCCEEDED.
+
+**Verify:** log in as `customer2@demo.test`, open the jacket order, click Pay, then "Simulate failure".
+Open Pay again: it shows "Your last attempt failed". Click Pay. The order moves to Paid.
+
+### 5. Payment secret in plaintext, compared with `!==`: fixed
+
+The `Payment` table now stores only `callbackSecretHash`, a SHA-256 of the secret, and comparison uses
+`crypto.timingSafeEqual` (`lib/payments/secret.ts`). The raw secret lives in a new `GatewaySession`
+table, which stands in for "what the payment provider knows" and has RLS enabled with no policies, so
+no browser can read it.
+
+Before:
+
+```ts
+if (!payment || payment.callbackSecret !== body.secret) { ... 401 }
+```
+
+After:
+
+```ts
+export function secretMatches(presented: string, storedHash: string) {
+  const a = Buffer.from(hashSecret(presented), "hex");
+  const b = Buffer.from(storedHash, "hex");
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+```
+
+**Verify:** a wrong secret still returns 401 and logs `payment.callback.rejected`:
+
+```bash
+curl -s -w " %{http_code}\n" -X POST http://localhost:3000/api/payments/callback -H 'Content-Type: application/json' -d '{"paymentId":"00000000-0000-4000-8000-000000000000","secret":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","amountCents":100,"providerRef":"x","status":"SUCCEEDED"}'
+```
+
+### 6. Upload type trusted from the browser: fixed
+
+`lib/storage.ts` now reads the file's first bytes and accepts only real JPEG, PNG or WebP signatures.
+The stored content type and extension come from the bytes, never from the browser's label.
+
+Before: `const ext = ALLOWED[file.type];`
+After:
+
+```ts
+const bytes = Buffer.from(await file.arrayBuffer());
+const kind = sniffImage(bytes);
+if (!kind) return { error: "Photo must be a real JPEG, PNG or WebP image." };
+```
+
+**Verify:** an HTML file renamed to `.png` is rejected. A real PNG labelled `image/jpeg` is stored as `.png`.
+
+### 7. No security headers: fixed
+
+`next.config.ts` drops `X-Powered-By` and adds `X-Content-Type-Options`, `Referrer-Policy`,
+`X-Frame-Options`, `Permissions-Policy`, and HSTS in production. `middleware.ts` sets a per-request
+Content-Security-Policy with a nonce: scripts must carry the nonce, so injected script tags will not
+run. Connections are limited to this app and the project's Supabase host.
+
+**Verify:**
+
+```bash
+curl -s -D - -o /dev/null http://localhost:3000/login | grep -iE "content-security|x-content-type|referrer|x-frame|x-powered"
+```
+
+Every script on a page carries the nonce, and the browser console shows no CSP violations.
+
+**Limit:** `style-src` still allows `'unsafe-inline'` because Next.js and Tailwind inject style tags.
+Inline styles cannot run code, so this is an accepted trade-off.
+
+### 8. Auth cookies readable by JavaScript: fixed
+
+Supabase auth cookies are now `HttpOnly` (`lib/supabase/cookieOptions.ts`, used by both the server
+client and the middleware). The browser no longer needs them: the order page hands the chat component
+the user's short-lived access token, used only to open the Realtime socket. The browser Supabase client
+file was deleted.
+
+**Verify:** while signed in, run `document.cookie.includes("sb-")` in the browser console. It returns
+`false`. Live chat still updates without refresh.
+
+### 9. Sign-up rules bypassable via Supabase directly: partly fixed
+
+The `on_auth_user_created` trigger now trims the name and caps it at 80 characters, matching the form.
+Role was already safe. The password minimum is a Supabase project setting; see "Still on you".
+
+### 10. No security event logging: fixed
+
+`lib/log.ts` writes one JSON line per security event. Denied bid, order, chat, review and page access,
+rejected payment confirmations, failed or throttled logins and failed registrations are all logged.
+Emails are logged as a short hash, never in clear, and JSON encoding stops user text from forging lines.
+
+**Verify:** after the brute-force check above, the server output contains lines like:
+
+```
+{"level":"security","event":"auth.login.failed","emailTag":"58ef013430cf","ip":"::1",...}
+{"level":"security","event":"auth.login.throttled","emailTag":"58ef013430cf","ip":"::1",...}
+```
+
+### 11. PostCSS advisories inside Next: deferred
+
+The only fix npm offers is a major upgrade to Next 16, which can break the app and touches build-time
+code only. Deferred on purpose; recorded here so it is not forgotten.
+
+### 12. Operational footguns: fixed
+
+- The seed now deletes only `@demo.test` auth users.
+- `placeBid` treats only Prisma error `P2002` as "already bid"; other errors surface.
+- `lib/supabase/admin.ts` and `lib/storage.ts` import `server-only`, so importing them from client code
+  fails at build time.
+
+### Found during the fix: RLS helper exposed as an API endpoint
+
+The Supabase advisor flagged that the Message policy's helper function could be called as
+`/rest/v1/rpc/is_party_to_paid_order`. It only reported the caller's own access, but it is now in a
+`private` schema the API does not publish. Checked from the browser's position: the party sees their
+messages, another signed-in user sees none, the RPC returns "not found", and `GatewaySession` returns
+no rows.
+
+### Still on you: Supabase dashboard settings
+
+These cannot be changed from code or SQL. All are under **Authentication** in the khiaty project.
+
+| Setting | Where | Value | Closes |
+|---|---|---|---|
+| Minimum password length | Sign In / Providers, then Email | 8 or more | Finding 9 |
+| Leaked password protection | Sign In / Providers, then Email (may need a paid plan) | On | Advisor warning, ASVS 6.2.12 |
+| Sign-in rate limits | Rate Limits | Review the current quota | Finding 2, defense in depth |

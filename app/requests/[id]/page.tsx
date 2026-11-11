@@ -6,6 +6,7 @@ import { money, STATUS_LABEL, when } from "@/lib/format";
 import { acceptBid, declineBid } from "@/lib/actions/bids";
 import { PlaceBidForm, ReviseBidForm } from "./BidForms";
 import { signedPhotoUrl } from "@/lib/storage";
+import { securityEvent } from "@/lib/log";
 
 type Props = { params: Promise<{ id: string }> };
 
@@ -19,7 +20,10 @@ export default async function RequestPage({ params }: Props) {
   });
   if (!request) notFound();
   // A customer may only open their own requests. Providers may open any (they need to browse to bid).
-  if (user.role === "CUSTOMER" && request.customerId !== user.id) notFound();
+  if (user.role === "CUSTOMER" && request.customerId !== user.id) {
+    securityEvent("request.view.denied", { userId: user.id, requestId: id });
+    notFound();
+  }
 
   // Access was checked above; only now do we mint a short-lived link to the private photo.
   const photoUrl = request.photoPath ? await signedPhotoUrl(request.photoPath) : null;

@@ -13,12 +13,13 @@ export default async function PayPage({ params }: { params: Promise<{ paymentId:
     include: { order: { include: { request: { select: { title: true } }, provider: { select: { name: true } } } } },
   });
   if (!payment || payment.order.customerId !== user.id) notFound();
-  if (payment.status !== "PENDING") redirect(`/orders/${payment.orderId}`);
+  if (payment.status === "SUCCEEDED") redirect(`/orders/${payment.orderId}`); // FAILED may be retried
 
   return (
     <div className="mx-auto max-w-md rounded-lg border-2 border-dashed border-indigo-300 bg-indigo-50 p-6">
       <div className="text-xs uppercase tracking-wide text-indigo-700">MockPay · secure checkout (simulated)</div>
       <h1 className="mt-2 text-xl font-semibold">Pay {money(payment.amountCents)}</h1>
+      {payment.status === "FAILED" && <p className="mt-1 text-sm text-red-700">Your last attempt failed. You can try again.</p>}
       <p className="mt-1 text-sm text-stone-700">
         {payment.order.request.title} · to {payment.order.provider.name}
       </p>

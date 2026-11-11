@@ -5,6 +5,7 @@ import type { OrderStatus } from "@prisma/client";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/auth";
 import { transition, TransitionError } from "@/lib/orders/stateMachine";
+import { securityEvent } from "@/lib/log";
 
 const USER_TARGETS: OrderStatus[] = ["IN_PROGRESS", "DELIVERED", "COMPLETED"];
 
@@ -18,7 +19,10 @@ export async function advanceOrder(formData: FormData) {
   try {
     await db.$transaction((tx) => transition(tx, orderId, to, { id: user.id, role: user.role }));
   } catch (e) {
-    if (e instanceof TransitionError) return; // page re-renders with the real state
+    if (e instanceof TransitionError) {
+      securityEvent("order.transition.denied", { userId: user.id, orderId, to, reason: e.message });
+      return; // page re-renders with the real state
+    }
     throw e;
   }
   revalidatePath(`/orders/${orderId}`);

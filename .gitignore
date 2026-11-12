@@ -50,3 +50,4 @@ prisma/*.db-journal
 # Coursework write-up: keep local only
 submission/SYSTEMS_ANALYSIS.md
 submission/*.docx
+submission/*.pdf

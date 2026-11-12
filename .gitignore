@@ -46,3 +46,7 @@ next-env.d.ts
 prisma/*.db
 prisma/*.db-journal
 /uploads
+
+# Coursework write-up: keep local only
+submission/SYSTEMS_ANALYSIS.md
+submission/*.docx

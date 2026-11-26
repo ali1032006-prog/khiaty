@@ -51,3 +51,6 @@ prisma/*.db-journal
 submission/SYSTEMS_ANALYSIS.md
 submission/*.docx
 submission/*.pdf
+
+# verify-khiaty proof artifacts
+/.verify-evidence
